@@ -1,0 +1,54 @@
+name: PaymentServiceDegraded
+description: >
+  Automated response to payment service degradation at Cencosud.
+  Covers DB connection pool exhaustion, worker crash loops, and
+  downstream gateway timeouts (Transbank, Mercado Pago, Kushki).
+severity: critical
+triggers:
+  - PaymentServiceDegraded
+  - PaymentHighErrorRate
+  - payment
+
+steps:
+  - name: check_db_pool_status
+    type: http
+    url: "http://internal-ops.cencosud.internal/db-pool-status"
+    method: GET
+    timeout: 10
+    on_failure: continue
+
+  - name: check_gateway_health
+    type: http
+    url: "http://internal-ops.cencosud.internal/gateway-health"
+    method: GET
+    timeout: 10
+    on_failure: continue
+
+  - name: scale_payment_workers
+    type: ansible
+    playbook: playbooks/scale_workers.yml
+    inventory: inventory/production
+    extra_vars:
+      service: payment
+      env: production
+      replicas: 6
+    timeout: 120
+    on_failure: continue
+
+  - name: flush_circuit_breakers
+    type: http
+    url: "http://payment-service.internal/admin/circuit-breaker/reset"
+    method: POST
+    body:
+      services: ["transbank", "mercado_pago", "kushki"]
+    timeout: 15
+    on_failure: continue
+
+  - name: notify_sre_channel
+    type: slack
+    channel: "#sre-incidents"
+    message: |
+      PaymentServiceDegraded runbook executed.
+      Steps: DB pool checked, workers scaled to 6, circuit breakers reset.
+      MTTR clock started. Verify in Grafana dashboard.
+    on_failure: continue

@@ -1,0 +1,46 @@
+name: CheckoutServiceTimeout
+description: >
+  Response to checkout service p99 latency exceeding 3s SLO threshold.
+  Common causes: Redis cache miss storm, catalog DB slow query, CDN edge
+  propagation lag during Black Friday traffic spikes.
+severity: warning
+triggers:
+  - CheckoutHighLatency
+  - CheckoutP99Exceeded
+  - checkout
+
+steps:
+  - name: check_redis_memory
+    type: http
+    url: "http://internal-ops.cencosud.internal/redis-info?section=memory"
+    method: GET
+    timeout: 10
+    on_failure: continue
+
+  - name: warm_checkout_cache
+    type: shell
+    command: >
+      python scripts/cache_warmer.py
+      --service checkout
+      --top-skus 1000
+      --countries CL AR BR PE CO
+    timeout: 180
+    on_failure: continue
+
+  - name: trigger_cdn_purge
+    type: http
+    url: "http://cdn-ops.cencosud.internal/purge"
+    method: POST
+    body:
+      scope: checkout_static
+      regions: ["cl", "ar", "br", "pe", "co"]
+    timeout: 30
+    on_failure: continue
+
+  - name: notify_sre_channel
+    type: slack
+    channel: "#sre-incidents"
+    message: |
+      CheckoutServiceTimeout runbook executed.
+      Cache warmed (top 1000 SKUs, 5 countries), CDN purge triggered.
+    on_failure: continue
